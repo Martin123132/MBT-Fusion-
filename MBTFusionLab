@@ -1,0 +1,614 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { Play, Pause, RotateCcw, Zap, Settings, TrendingUp, Battery, Thermometer, Target } from 'lucide-react';
+
+const MBTFusionLab = () => {
+  const canvasRef = useRef(null);
+  const [isRunning, setIsRunning] = useState(false);
+  const [time, setTime] = useState(0);
+  
+  // MBT Fusion Parameters
+  const [numParticles, setNumParticles] = useState(5000);
+  const [tapEfficiency, setTapEfficiency] = useState(0.05);
+  const [fusionThreshold, setFusionThreshold] = useState(0.3);
+  const [injectionRate, setInjectionRate] = useState(50);
+  const [targetCoreDensity, setTargetCoreDensity] = useState(1200);
+  const [heightScale, setHeightScale] = useState(50.0);
+  const [r0, setR0] = useState(30.0);
+  
+  // Reactor State
+  const [particles, setParticles] = useState([]);
+  const [coreDensity, setCoreDensity] = useState([]);
+  const [temperature, setTemperature] = useState([]);
+  const [netEnergy, setNetEnergy] = useState([]);
+  const [injectionCount, setInjectionCount] = useState(0);
+  const [energyTap, setEnergyTap] = useState(0);
+  const [reactorStatus, setReactorStatus] = useState('Initializing');
+
+  // Initialize particles
+  useEffect(() => {
+    const initializeReactor = () => {
+      const newParticles = [];
+      for (let i = 0; i < numParticles; i++) {
+        newParticles.push({
+          x: (Math.random() - 0.5) * 2 * r0,
+          y: (Math.random() - 0.5) * 2 * r0,
+          z: (Math.random() - 0.5) * 2 * r0,
+          vx: (Math.random() - 0.5) * 0.2,
+          vy: (Math.random() - 0.5) * 0.2,
+          vz: (Math.random() - 0.5) * 0.2,
+          energy: Math.random() * 0.1,
+          age: 0
+        });
+      }
+      setParticles(newParticles);
+      setCoreDensity([]);
+      setTemperature([]);
+      setNetEnergy([]);
+      setInjectionCount(0);
+      setEnergyTap(0);
+      setTime(0);
+    };
+    
+    initializeReactor();
+  }, [numParticles, r0]);
+
+  // Bell geometry function
+  const bellRadius = (h) => {
+    return r0 * (Math.abs(h) / heightScale + Math.exp(Math.abs(h) / heightScale) - 1);
+  };
+
+  // Animation loop
+  useEffect(() => {
+    if (!isRunning) return;
+    
+    const simulate = () => {
+      setParticles(prevParticles => {
+        let newParticles = [...prevParticles];
+        
+        // Calculate core density (particles within radius < 10)
+        const coreRadius = 10;
+        const density = newParticles.filter(p => 
+          Math.sqrt(p.x*p.x + p.y*p.y + p.z*p.z) < coreRadius
+        ).length;
+        
+        // Calculate temperature proxy
+        const avgVelocitySquared = newParticles.reduce((sum, p) => 
+          sum + (p.vx*p.vx + p.vy*p.vy + p.vz*p.vz), 0
+        ) / newParticles.length;
+        
+        // Update tracking arrays
+        setCoreDensity(prev => [...prev.slice(-49), density]);
+        setTemperature(prev => [...prev.slice(-49), avgVelocitySquared]);
+        
+        // Particle injection based on density deficit
+        if (density < targetCoreDensity) {
+          for (let i = 0; i < injectionRate; i++) {
+            newParticles.push({
+              x: (Math.random() - 0.5) * 2 * r0 * 0.8,
+              y: (Math.random() - 0.5) * 2 * r0 * 0.8,
+              z: (Math.random() - 0.5) * 2 * r0 * 0.8,
+              vx: (Math.random() - 0.5) * 0.2,
+              vy: (Math.random() - 0.5) * 0.2,
+              vz: (Math.random() - 0.5) * 0.2,
+              energy: Math.random() * 0.1,
+              age: 0
+            });
+          }
+          setInjectionCount(prev => prev + 1);
+        }
+        
+        // Update particle physics
+        newParticles = newParticles.map(p => {
+          const r = Math.sqrt(p.x*p.x + p.y*p.y + p.z*p.z);
+          
+          // Inward gravitational-like force
+          const inwardForce = 0.001;
+          const fx_in = -p.x * inwardForce;
+          const fy_in = -p.y * inwardForce;
+          const fz_in = -p.z * inwardForce;
+          
+          // Outward thermal pressure (when hot enough for fusion)
+          const outwardForce = 0.0002 * (avgVelocitySquared > fusionThreshold ? 1 : 0);
+          const fx_out = p.x * outwardForce;
+          const fy_out = p.y * outwardForce;
+          const fz_out = p.z * outwardForce;
+          
+          // Bell boundary enforcement
+          const allowedRadius = bellRadius(p.z);
+          const radialDistance = Math.sqrt(p.x*p.x + p.y*p.y);
+          
+          let newVx = p.vx + fx_in + fx_out;
+          let newVy = p.vy + fy_in + fy_out;
+          let newVz = p.vz + fz_in + fz_out;
+          
+          // Bounce off bell boundary
+          if (radialDistance > allowedRadius) {
+            newVx *= -0.5;
+            newVy *= -0.5;
+          }
+          
+          // Update position
+          const newX = p.x + newVx;
+          const newY = p.y + newVy;
+          const newZ = p.z + newVz;
+          
+          // Energy generation for fusion particles
+          let newEnergy = p.energy;
+          if (r < coreRadius && avgVelocitySquared > fusionThreshold) {
+            newEnergy += 0.001 * density * avgVelocitySquared;
+          }
+          
+          return {
+            x: newX,
+            y: newY,
+            z: newZ,
+            vx: newVx,
+            vy: newVy,
+            vz: newVz,
+            energy: newEnergy,
+            age: p.age + 1
+          };
+        });
+        
+        // Energy extraction
+        const extracted = tapEfficiency * Math.max(0, density - 50) * avgVelocitySquared;
+        setEnergyTap(prev => prev + extracted);
+        
+        // Container cost (much lower for static bell - this was the key in your code!)
+        const avgVelocity = Math.sqrt(avgVelocitySquared);
+        const containerCost = 0.01 * avgVelocity; // Fixed cost, not per particle
+        
+        const netEnergyStep = extracted - containerCost;
+        setNetEnergy(prev => [...prev.slice(-49), (prev[prev.length - 1] || 0) + netEnergyStep]);
+        
+        // Update reactor status
+        if (avgVelocitySquared > fusionThreshold && density > targetCoreDensity * 0.8) {
+          setReactorStatus('Fusion Active');
+        } else if (density > targetCoreDensity * 0.5) {
+          setReactorStatus('Pre-Fusion');
+        } else {
+          setReactorStatus('Heating');
+        }
+        
+        return newParticles;
+      });
+      
+      setTime(t => t + 1);
+    };
+    
+    const interval = setInterval(simulate, 100);
+    return () => clearInterval(interval);
+  }, [isRunning, targetCoreDensity, fusionThreshold, tapEfficiency, injectionRate, r0, heightScale]);
+
+  // Canvas rendering
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    
+    const ctx = canvas.getContext('2d');
+    const width = canvas.width;
+    const height = canvas.height;
+    
+    ctx.fillStyle = '#0a0a0a';
+    ctx.fillRect(0, 0, width, height);
+    
+    // Draw bell containment outline
+    ctx.strokeStyle = '#fbbf24';
+    ctx.lineWidth = 2;
+    
+    const centerX = width / 2;
+    const centerY = height / 2;
+    const scale = 3;
+    
+    // Draw bell shape cross-section
+    ctx.beginPath();
+    for (let z = -heightScale; z <= heightScale; z += 2) {
+      const radius = bellRadius(z);
+      const x = centerX + radius * scale;
+      const y = centerY + z * scale;
+      
+      if (z === -heightScale) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    
+    for (let z = heightScale; z >= -heightScale; z -= 2) {
+      const radius = bellRadius(z);
+      const x = centerX - radius * scale;
+      const y = centerY + z * scale;
+      ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.stroke();
+    
+    // Draw particles
+    particles.slice(0, 1000).forEach(p => { // Limit display for performance
+      const x = centerX + p.x * scale;
+      const y = centerY + p.z * scale; // Top view projection
+      const velocity = Math.sqrt(p.vx*p.vx + p.vy*p.vy + p.vz*p.vz);
+      
+      // Color based on energy/velocity
+      if (velocity > fusionThreshold) {
+        ctx.fillStyle = '#ef4444'; // Hot fusion particles
+      } else if (velocity > fusionThreshold * 0.5) {
+        ctx.fillStyle = '#f59e0b'; // Warm particles
+      } else {
+        ctx.fillStyle = '#3b82f6'; // Cold particles
+      }
+      
+      ctx.beginPath();
+      ctx.arc(x, y, 2, 0, 2 * Math.PI);
+      ctx.fill();
+    });
+    
+    // Core density indicator
+    const coreRadius = 10 * scale;
+    ctx.strokeStyle = 'rgba(16, 185, 129, 0.5)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(centerX, centerY, coreRadius, 0, 2 * Math.PI);
+    ctx.stroke();
+    
+    // Display stats
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '14px monospace';
+    ctx.fillText(`Particles: ${particles.length}`, 20, 30);
+    ctx.fillText(`Core Density: ${coreDensity[coreDensity.length - 1] || 0}`, 20, 50);
+    ctx.fillText(`Temperature: ${(temperature[temperature.length - 1] || 0).toFixed(3)}`, 20, 70);
+    ctx.fillText(`Status: ${reactorStatus}`, 20, 90);
+    ctx.fillText(`Injections: ${injectionCount}`, 20, 110);
+    
+  }, [particles, coreDensity, temperature, reactorStatus, injectionCount, r0, heightScale, fusionThreshold]);
+
+  const handleReset = () => {
+    setIsRunning(false);
+    setTime(0);
+    const newParticles = [];
+    for (let i = 0; i < numParticles; i++) {
+      newParticles.push({
+        x: (Math.random() - 0.5) * 2 * r0,
+        y: (Math.random() - 0.5) * 2 * r0,
+        z: (Math.random() - 0.5) * 2 * r0,
+        vx: (Math.random() - 0.5) * 0.2,
+        vy: (Math.random() - 0.5) * 0.2,
+        vz: (Math.random() - 0.5) * 0.2,
+        energy: Math.random() * 0.1,
+        age: 0
+      });
+    }
+    setParticles(newParticles);
+    setCoreDensity([]);
+    setTemperature([]);
+    setNetEnergy([]);
+    setInjectionCount(0);
+    setEnergyTap(0);
+  };
+
+  return (
+    <div className="min-h-screen bg-gray-900 text-white p-6">
+      <div className="max-w-7xl mx-auto">
+        {/* Header */}
+        <div className="text-center mb-8">
+          <h1 className="text-4xl font-bold bg-gradient-to-r from-orange-400 to-red-500 bg-clip-text text-transparent mb-2">
+            MBT FUSION LABORATORY
+          </h1>
+          <p className="text-xl text-gray-300">
+            Bell-Shaped Geometry Fusion Reactor
+          </p>
+          <p className="text-lg text-orange-400 mt-2">
+            "No Rotation Required • Dynamic Fuel Injection • Grid-Responsive Power"
+          </p>
+        </div>
+
+        {/* Control Panel */}
+        <div className="bg-gray-800 rounded-lg p-6 mb-6">
+          <div className="flex gap-4 items-center justify-center mb-6">
+            <button
+              onClick={() => setIsRunning(!isRunning)}
+              className={`flex items-center gap-2 px-6 py-3 rounded-lg font-semibold transition-all ${
+                isRunning ? 'bg-red-600 hover:bg-red-700' : 'bg-green-600 hover:bg-green-700'
+              }`}
+            >
+              {isRunning ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5" />}
+              {isRunning ? 'Stop Reactor' : 'Start Fusion'}
+            </button>
+            
+            <button
+              onClick={handleReset}
+              className="flex items-center gap-2 px-6 py-3 bg-gray-600 hover:bg-gray-700 rounded-lg font-semibold transition-all"
+            >
+              <RotateCcw className="w-5 h-5" />
+              Reset Reactor
+            </button>
+            
+            <div className="text-orange-400 font-mono text-lg">
+              Time: {time}
+            </div>
+            
+            <div className={`px-4 py-2 rounded-lg font-semibold ${
+              reactorStatus === 'Fusion Active' ? 'bg-green-600' :
+              reactorStatus === 'Pre-Fusion' ? 'bg-yellow-600' : 'bg-blue-600'
+            }`}>
+              {reactorStatus}
+            </div>
+          </div>
+
+          {/* MBT Fusion Parameters */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-2">
+                Target Core Density: {targetCoreDensity}
+              </label>
+              <input
+                type="range"
+                min="500"
+                max="2000"
+                step="50"
+                value={targetCoreDensity}
+                onChange={(e) => setTargetCoreDensity(parseInt(e.target.value))}
+                className="w-full"
+              />
+            </div>
+            
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-2">
+                Fusion Threshold: {fusionThreshold.toFixed(2)}
+              </label>
+              <input
+                type="range"
+                min="0.1"
+                max="1.0"
+                step="0.05"
+                value={fusionThreshold}
+                onChange={(e) => setFusionThreshold(parseFloat(e.target.value))}
+                className="w-full"
+              />
+            </div>
+            
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-2">
+                Tap Efficiency: {(tapEfficiency * 100).toFixed(1)}%
+              </label>
+              <input
+                type="range"
+                min="0.01"
+                max="0.20"
+                step="0.01"
+                value={tapEfficiency}
+                onChange={(e) => setTapEfficiency(parseFloat(e.target.value))}
+                className="w-full"
+              />
+            </div>
+            
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-2">
+                Injection Rate: {injectionRate}
+              </label>
+              <input
+                type="range"
+                min="10"
+                max="200"
+                step="10"
+                value={injectionRate}
+                onChange={(e) => setInjectionRate(parseInt(e.target.value))}
+                className="w-full"
+              />
+            </div>
+            
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-2">
+                Bell Height Scale: {heightScale.toFixed(1)}
+              </label>
+              <input
+                type="range"
+                min="20"
+                max="100"
+                step="5"
+                value={heightScale}
+                onChange={(e) => setHeightScale(parseFloat(e.target.value))}
+                className="w-full"
+              />
+            </div>
+            
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-2">
+                Base Radius: {r0.toFixed(1)}
+              </label>
+              <input
+                type="range"
+                min="20"
+                max="60"
+                step="5"
+                value={r0}
+                onChange={(e) => setR0(parseFloat(e.target.value))}
+                className="w-full"
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Main Reactor Display */}
+        <div className="bg-gray-800 rounded-lg p-6">
+          <h2 className="text-2xl font-bold text-orange-400 mb-4">
+            MBT Bell-Shaped Fusion Reactor
+          </h2>
+          <p className="text-gray-300 mb-4">
+            Static bell geometry with dynamic fuel injection - no rotation required!
+          </p>
+          
+          <div className="bg-black rounded-lg p-4">
+            <canvas
+              ref={canvasRef}
+              width={800}
+              height={600}
+              className="w-full border border-gray-700 rounded"
+            />
+          </div>
+          
+          {/* Live Reactor Data */}
+          <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="bg-gray-700 p-3 rounded">
+              <div className="text-xs text-gray-400 flex items-center gap-1">
+                <Target className="w-3 h-3" />
+                Core Density
+              </div>
+              <div className="text-lg font-mono text-green-400">
+                {coreDensity[coreDensity.length - 1] || 0}
+              </div>
+            </div>
+            
+            <div className="bg-gray-700 p-3 rounded">
+              <div className="text-xs text-gray-400 flex items-center gap-1">
+                <Thermometer className="w-3 h-3" />
+                Temperature
+              </div>
+              <div className="text-lg font-mono text-red-400">
+                {(temperature[temperature.length - 1] || 0).toFixed(3)}
+              </div>
+            </div>
+            
+            <div className="bg-gray-700 p-3 rounded">
+              <div className="text-xs text-gray-400 flex items-center gap-1">
+                <Battery className="w-3 h-3" />
+                Net Energy
+              </div>
+              <div className="text-lg font-mono text-yellow-400">
+                {(netEnergy[netEnergy.length - 1] || 0).toFixed(2)}
+              </div>
+            </div>
+            
+            <div className="bg-gray-700 p-3 rounded">
+              <div className="text-xs text-gray-400 flex items-center gap-1">
+                <TrendingUp className="w-3 h-3" />
+                Fuel Injections
+              </div>
+              <div className="text-lg font-mono text-purple-400">
+                {injectionCount}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* MBT Theory Panel */}
+        <div className="mt-6 bg-gray-800 rounded-lg p-6">
+          <h3 className="text-xl font-semibold mb-4 text-orange-400">MBT Bell Fusion Theory</h3>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+            <div className="bg-gray-900 rounded p-4">
+              <h4 className="font-semibold text-green-400 mb-2">No Rotation Required</h4>
+              <p className="text-gray-300">Static bell geometry provides natural particle confinement through MBT space-time curvature, eliminating complex rotating magnetic fields.</p>
+            </div>
+            <div className="bg-gray-900 rounded p-4">
+              <h4 className="font-semibold text-blue-400 mb-2">Dynamic Fuel Injection</h4>
+              <p className="text-gray-300">Real-time density feedback enables grid-responsive power output - the first fusion system that can throttle power on demand.</p>
+            </div>
+            <div className="bg-gray-900 rounded p-4">
+              <h4 className="font-semibold text-purple-400 mb-2">Engineering Simplification</h4>
+              <p className="text-gray-300">Bell-shaped containment reduces complexity compared to tokamaks, making compact fusion reactors feasible.</p>
+            </div>
+          </div>
+        </div>
+
+        {/* Quick Presets */}
+        <div className="mt-6 bg-gray-800 rounded-lg p-6">
+          <h3 className="text-xl font-semibold mb-4 text-orange-400">Reactor Presets</h3>
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+            <button
+              onClick={() => {
+                // MARTIN'S PERFECT SETUP - Exact parameters from your working code
+                setNumParticles(5000);
+                setTargetCoreDensity(1200);
+                setFusionThreshold(0.3);
+                setTapEfficiency(0.05);
+                setInjectionRate(50);
+                setHeightScale(50.0);
+                setR0(30.0);
+                handleReset();
+              }}
+              className="bg-gradient-to-r from-yellow-500 to-orange-600 hover:from-yellow-600 hover:to-orange-700 p-4 rounded text-sm font-bold transition-all transform hover:scale-105 border-2 border-yellow-400"
+            >
+              ⭐ MARTIN'S PERFECT SETUP
+              <div className="text-xs mt-1 opacity-90">Proven Working Configuration</div>
+            </button>
+            
+            <button
+              onClick={() => {
+                setTargetCoreDensity(1200);
+                setFusionThreshold(0.3);
+                setTapEfficiency(0.05);
+                setHeightScale(50);
+                setR0(30);
+              }}
+              className="bg-green-600 hover:bg-green-700 p-3 rounded text-sm font-semibold transition-all"
+            >
+              🔥 Standard Fusion
+            </button>
+            
+            <button
+              onClick={() => {
+                setTargetCoreDensity(1800);
+                setFusionThreshold(0.2);
+                setTapEfficiency(0.08);
+                setHeightScale(40);
+                setR0(25);
+              }}
+              className="bg-orange-600 hover:bg-orange-700 p-3 rounded text-sm font-semibold transition-all"
+            >
+              ⚡ High Output
+            </button>
+            
+            <button
+              onClick={() => {
+                setTargetCoreDensity(800);
+                setFusionThreshold(0.5);
+                setTapEfficiency(0.03);
+                setHeightScale(70);
+                setR0(40);
+              }}
+              className="bg-blue-600 hover:bg-blue-700 p-3 rounded text-sm font-semibold transition-all"
+            >
+              🧪 Research Mode
+            </button>
+            
+            <button
+              onClick={() => {
+                setTargetCoreDensity(2000);
+                setFusionThreshold(0.15);
+                setTapEfficiency(0.12);
+                setHeightScale(35);
+                setR0(20);
+              }}
+              className="bg-red-600 hover:bg-red-700 p-3 rounded text-sm font-semibold transition-all"
+            >
+              💥 Maximum Power
+            </button>
+          </div>
+          
+          <div className="mt-4 p-4 bg-gradient-to-r from-yellow-50 to-orange-50 border border-yellow-300 rounded-lg">
+            <h4 className="font-bold text-yellow-800 mb-2">⭐ About Martin's Perfect Setup</h4>
+            <p className="text-yellow-700 text-sm">
+              These are the <strong>exact parameters from Martin Ollett's working code</strong> that achieved 
+              sustained proto-fusion with positive net energy output. The bell geometry (r₀=30, h₀=50) 
+              creates optimal particle confinement, while the injection rate (50 particles) maintains 
+              target core density (1200) for continuous fusion operation.
+            </p>
+            <div className="mt-2 text-xs text-yellow-600">
+              <strong>Key Formula:</strong> r(h) = 30 × (h/50 + e^(h/50) - 1) - The proven MBT bell shape
+            </div>
+          </div>
+        </div>
+        
+        {/* Footer */}
+        <div className="mt-8 text-center text-gray-400">
+          <p>🔥 MBT Bell Fusion Laboratory - Revolutionary Static Geometry Reactor 🔥</p>
+          <p className="text-sm mt-2">
+            Based on Martin Ollett's breakthrough fusion containment design using Motion = Being Theory
+          </p>
+          <p className="text-xs mt-2">
+            "From cosmic star formation to desktop fusion - MBT geometry works at every scale"
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default MBTFusionLab;
